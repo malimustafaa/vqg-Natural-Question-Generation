@@ -22,6 +22,7 @@ Usage:
 import argparse
 import concurrent.futures as cf
 import csv
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -30,6 +31,13 @@ from tqdm import tqdm
 
 SOURCES = ["bing", "coco", "flickr"]
 SPLITS = ["train", "val", "test"]
+
+# Some CDNs (Flickr in particular) throttle/block the bare "python-requests"
+# UA and bursts from datacenter IPs (e.g. Colab's) -- a normal browser UA plus
+# a couple of retries with backoff clears most of these transient failures.
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; vqg-dataset-fetch/1.0)"}
+MAX_ATTEMPTS = 4
+RETRY_BACKOFF = 2.0
 
 EXT_BY_CONTENT_TYPE = {
     "image/jpeg": ".jpg",
@@ -51,19 +59,32 @@ def download_one(image_id, url, out_dir, timeout):
     existing = list(out_dir.glob(f"{image_id}.*"))
     if existing:
         return image_id, str(existing[0]), "already_downloaded"
-    try:
-        r = requests.get(url, timeout=timeout, stream=True)
-        if r.status_code != 200:
-            return image_id, None, f"http_{r.status_code}"
-        content = r.content
-        if len(content) < 512:
-            return image_id, None, "too_small"
-        ext = guess_ext(url, r.headers.get("Content-Type"))
-        out_path = out_dir / f"{image_id}{ext}"
-        out_path.write_bytes(content)
-        return image_id, str(out_path), "ok"
-    except requests.exceptions.RequestException as e:
-        return image_id, None, f"error:{type(e).__name__}"
+
+    last_status = "not_attempted"
+    for attempt in range(MAX_ATTEMPTS):
+        if attempt:
+            time.sleep(RETRY_BACKOFF * attempt)
+        try:
+            r = requests.get(url, timeout=timeout, headers=HEADERS, stream=True)
+            if r.status_code != 200:
+                last_status = f"http_{r.status_code}"
+                # Not worth retrying a real 404/403 (link is gone), but do
+                # retry rate-limit/server errors.
+                if r.status_code not in (429, 500, 502, 503, 504):
+                    break
+                continue
+            content = r.content
+            if len(content) < 512:
+                last_status = "too_small"
+                continue
+            ext = guess_ext(url, r.headers.get("Content-Type"))
+            out_path = out_dir / f"{image_id}{ext}"
+            out_path.write_bytes(content)
+            return image_id, str(out_path), "ok"
+        except requests.exceptions.RequestException as e:
+            last_status = f"error:{type(e).__name__}"
+            continue
+    return image_id, None, last_status
 
 
 def download_split_source(df, out_dir, workers, timeout, desc):
