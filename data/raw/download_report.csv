@@ -1,0 +1,10 @@
+source,split,attempted,downloaded,pct
+bing,train,8,8,100.0
+coco,train,8,8,100.0
+flickr,train,8,8,100.0
+bing,val,8,8,100.0
+coco,val,8,8,100.0
+flickr,val,8,8,100.0
+bing,test,8,8,100.0
+coco,test,8,8,100.0
+flickr,test,8,8,100.0
