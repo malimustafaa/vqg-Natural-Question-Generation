@@ -99,6 +99,31 @@ Consequences:
   way) counteracts that specific bias and gave a small, real improvement in testing -- but only a small
   one; the dominant effect is architectural, per above, and isn't something a decode-time flag can fix.
 
+## Results
+
+Final numbers, paper-faithful setup (`vqg/dataset.py` expanding all 5 references per image, `--lr 0.1
+--patience 5`, decoded with `--length-penalty 0.6`), scored with the official METEOR 1.5 jar (see "Known
+deviations" above for why that matters) against the paper's own Table 5:
+
+| | Paper BLEU / MET | Ours BLEU / MET |
+|---|---|---|
+| GRNN_all → bing | 11.1 / 15.8 | 17.5 / 20.1 |
+| GRNN_all → coco | 14.2 / 18.5 | 29.7 / 25.8 |
+| GRNN_all → flickr | 9.9 / 14.9 | 19.6 / 20.7 |
+| GRNN_bing → bing (X) | 12.3 / 16.2 | 15.3 / 19.3 |
+| GRNN_coco → coco (X) | 13.9 / 18.5 | 29.2 / 26.3 |
+| GRNN_flickr → flickr (X) | 9.9 / 14.3 | 21.5 / 21.6 |
+
+Our numbers run consistently higher, not lower, than the paper's — see "Known deviations" above for why
+that's not a good sign on its own (automatic metrics reward the generic-output collapse this architecture
+is prone to). This run has the best generation diversity of every variant tried during debugging (35.5%
+unique generations on bing, 21.2% on coco, 20.1% on flickr, vs. as low as ~17-20% in earlier runs), and
+is the one we settled on: the two attempted fixes for the collapse (lower LR + higher patience; one
+random reference per image per epoch instead of 5 in parallel) both made it worse and were reverted --
+the remaining gap to the paper is attributed to the architecture's single-shot image conditioning
+(shared with the paper) and having less training data than the paper did, particularly for bing (~38.5%
+of the original 5,000 images, unrecoverable), not to a fixable bug in this reproduction.
+
 ## Pipeline
 
 ```
