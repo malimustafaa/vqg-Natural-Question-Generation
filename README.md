@@ -62,19 +62,42 @@ Consequences:
   ```
   then pass `--meteor-jar tools/meteor-1.5/meteor-1.5.jar` to `evaluate.py` (requires a JRE; not committed
   to this repo since it's a ~68MB third-party binary, see `.gitignore`).
-- Early GRNN_all/X runs generated the same handful of generic questions ("where is this ?", "how old is
-  the baby ?") for 15-25% of the entire test set regardless of image content -- automatic scores looked
-  paper-competitive, but that's the metrics rewarding genericness, not real image-conditioned generation
-  (the exact failure mode the paper's task definition, Section 3/Figure 2, explicitly excludes). Root
-  cause: `vqg/dataset.py` originally expanded each image into 5 parallel training examples (one per human
-  reference), and plain cross-entropy over 5 genuinely conflicting targets for the same input pushes the
-  model toward the generic-average answer rather than any specific one -- more training made it *worse*,
-  not better, since it converges harder toward that generic optimum. Fixed by sampling one random
-  reference per image per epoch instead (still sees full diversity over a run, never forced to average
-  within an epoch). Secondary factor: `vqg/beam_search.py` ranked purely by raw cumulative log-probability,
-  which structurally favors short sequences; `--length-penalty` (GNMT-style, default 0.0 = original
-  paper-matching behavior) counteracts this but only marginally on its own -- the dataset fix is what
-  actually matters.
+- **Generic/repeated generations, and why our BLEU/METEOR run higher than the paper's.** GRNN_all/X runs
+  generate the same handful of generic questions ("where is this ?", "how old is the baby ?") for 15-25%
+  of the entire test set regardless of image content. Automatic scores end up looking paper-competitive
+  (or higher) *because of* this, not despite it -- nearly every VQG reference question shares the same
+  interrogative skeleton ("what/where/how" + "is/are" + pronoun), so a short, content-free, grammatically-
+  generic guess gets partial BLEU/METEOR credit against almost any reference, regardless of whether it
+  actually engages with the image. That's the opposite of what the paper's task definition is going for
+  (Section 3/Figure 2 explicitly excludes generic/visually-trivial questions), so higher automatic scores
+  here do not mean better -- or even paper-comparable -- generation quality.
+
+  We looked for a fixable bug and didn't find one. Two targeted interventions were tried and both made
+  the collapse *worse*, not better, which points at the cause being structural rather than a training
+  hyperparameter or data-construction bug:
+  - Lower LR + higher patience (more training time): worse. More training converges *harder* toward
+    whatever a generic model already prefers, rather than moving away from it.
+  - Sampling one random reference per image per epoch instead of all 5 expanded in parallel: also worse,
+    and reverted -- back to the paper-standard multi-reference training setup described above.
+
+  The most likely actual cause is architectural, and faithful to the paper as specified: `vqg/model.py`
+  injects the image feature exactly once, as the GRU's initial hidden state (`h0`), with no attention and
+  no re-injection at later decoding steps (paper, Section 4.1: "the initial recurrent state to a ...
+  GRU"). GRUs have update/reset gates explicitly designed to let hidden-state information decay over
+  time; with the image only present at t=0, its influence on word choice can fade within just a few
+  timesteps, leaving the model to fall back on its learned token-to-token language model -- which is, by
+  construction, generic and image-agnostic. This is a known weakness of init-hidden-state-only visual
+  conditioning in general (it's part of why later captioning architectures moved to attention), and it's
+  inherent to the architecture the paper specifies, not something introduced by this reproduction. The
+  paper never reports a generation-diversity statistic for its own model, so we can't confirm whether
+  GRNN in the original paper showed the same degree of collapse -- but given the shared architecture,
+  it plausibly does to some extent, just unreported.
+
+  One secondary, kept fix: `vqg/beam_search.py` ranked purely by raw cumulative log-probability, which
+  structurally favors short sequences (every extra token multiplies in another sub-1 probability) on top
+  of the above. `--length-penalty` (GNMT-style, default `0.0` = unchanged, paper doesn't specify either
+  way) counteracts that specific bias and gave a small, real improvement in testing -- but only a small
+  one; the dominant effect is architectural, per above, and isn't something a decode-time flag can fix.
 
 ## Pipeline
 

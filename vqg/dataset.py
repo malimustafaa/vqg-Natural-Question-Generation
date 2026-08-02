@@ -1,21 +1,19 @@
 """
 dataset.py
 ---------------------------------
-PyTorch Dataset for training the GRNN, pairing the image's precomputed fc7
-feature vector with a tokenized/encoded question.
+PyTorch Dataset for training the GRNN. Expands each image into one training
+example per reference question (typically 5), pairing the image's precomputed
+fc7 feature vector with a tokenized/encoded question -- the standard training
+setup for this multi-reference captioning-style architecture family (paper:
+"based on the state-of-the-art multimodal Recurrent Neural Network model used
+for image captioning (Devlin et al., 2015; Vinyals et al., 2015)").
 
-One image, one random reference per epoch -- not all 5 expanded into fixed
-parallel examples. With 5 human questions per image genuinely disagreeing
-(that diversity is the whole point of VQG), presenting all 5 as equally-
-weighted targets for the *same* input in *every* epoch pushes plain
-cross-entropy toward the token sequence with the best average likelihood
-across all 5 -- i.e. a generic, safe, image-agnostic question -- rather than
-committing to any one of them. Sampling fresh each epoch still exposes the
-model to the full reference diversity over a training run, but without
-forcing it to average over conflicting targets within a single epoch.
+(Tried sampling one random reference per image per epoch instead, to see if
+it reduced generic/repeated generations -- it didn't; collapse got slightly
+worse, and it was already the more likely deviation from the paper's actual
+setup. Reverted. See README "Known deviations" for what's actually driving
+the generic-output issue -- it's architectural, not this.)
 """
-import random
-
 import torch
 from torch.utils.data import Dataset
 
@@ -30,20 +28,20 @@ class VQGDataset(Dataset):
         self.vocab = vocab
         self.features = features
         self.max_len = max_len
-        self.examples = []  # (image_id, [question_str, ...])
+        self.examples = []  # (image_id, question_str)
         for row in df.itertuples():
             if row.image_id not in features:
                 continue
-            questions = [q.strip() for q in str(row.questions).split(" | ") if q.strip()]
-            if questions:
-                self.examples.append((row.image_id, questions))
+            for q in str(row.questions).split(" | "):
+                q = q.strip()
+                if q:
+                    self.examples.append((row.image_id, q))
 
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx):
-        image_id, questions = self.examples[idx]
-        question = random.choice(questions)
+        image_id, question = self.examples[idx]
         feat = self.features[image_id]
         tokens = tokenize(question)[: self.max_len]
         ids = self.vocab.encode(tokens)
