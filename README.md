@@ -76,8 +76,8 @@ deviations" above for why that matters) against the paper's own Table 5:
 | GRNN_all → coco | 14.2 / 18.5 | 19.7 / 20.8 |
 | GRNN_all → flickr | 9.9 / 14.9 | 13.6 / 16.7 |
 | GRNN_bing → bing (X) | 12.3 / 16.2 | 15.3 / 19.3 |
-| GRNN_coco → coco (X) | 13.9 / 18.5 | 29.2 / 26.3 |
-| GRNN_flickr → flickr (X) | 9.9 / 14.3 | 21.5 / 21.6 |
+| GRNN_coco → coco (X) | 13.9 / 18.5 | 19.2 / 20.3 |
+| GRNN_flickr → flickr (X) | 9.9 / 14.3 | 11.5 / 21.6 |
 
 Our numbers run consistently higher, not lower, than the paper's — see "Known deviations" above for why
 that's not a good sign on its own (automatic metrics reward the generic-output collapse this architecture
