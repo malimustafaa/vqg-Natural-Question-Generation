@@ -62,6 +62,19 @@ Consequences:
   ```
   then pass `--meteor-jar tools/meteor-1.5/meteor-1.5.jar` to `evaluate.py` (requires a JRE; not committed
   to this repo since it's a ~68MB third-party binary, see `.gitignore`).
+- Early GRNN_all/X runs generated the same handful of generic questions ("where is this ?", "how old is
+  the baby ?") for 15-25% of the entire test set regardless of image content -- automatic scores looked
+  paper-competitive, but that's the metrics rewarding genericness, not real image-conditioned generation
+  (the exact failure mode the paper's task definition, Section 3/Figure 2, explicitly excludes). Root
+  cause: `vqg/dataset.py` originally expanded each image into 5 parallel training examples (one per human
+  reference), and plain cross-entropy over 5 genuinely conflicting targets for the same input pushes the
+  model toward the generic-average answer rather than any specific one -- more training made it *worse*,
+  not better, since it converges harder toward that generic optimum. Fixed by sampling one random
+  reference per image per epoch instead (still sees full diversity over a run, never forced to average
+  within an epoch). Secondary factor: `vqg/beam_search.py` ranked purely by raw cumulative log-probability,
+  which structurally favors short sequences; `--length-penalty` (GNMT-style, default 0.0 = original
+  paper-matching behavior) counteracts this but only marginally on its own -- the dataset fix is what
+  actually matters.
 
 ## Pipeline
 
