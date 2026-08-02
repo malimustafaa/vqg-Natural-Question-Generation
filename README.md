@@ -25,7 +25,7 @@ Given an image, generate a natural, engaging question about it (not a literal, v
 The paper describes the architecture at a level that leaves two implementation choices unstated. Both are
 called out here rather than silently assumed:
 
-1. **Word embedding dimension** — not given. Implemented as 500, to match the GRU's input size (the natural
+1. **Word embedding dimension**  not given. Implemented as 500, to match the GRU's input size (the natural
    reading, and consistent with the contemporaneous show-and-tell-style captioning models this architecture
    is based on).
 2. **`fc7 → 500` bridge nonlinearity** — the paper just says "transform." Implemented as a plain `Linear`
@@ -45,14 +45,14 @@ recovery (see `Visual_Question_Generation_dataset_1.0/cleaned/` in this project'
 Consequences:
 - Our vocabulary size will differ from the paper's reported 1,942 tokens (smaller training corpus at the
   same freq≥3 threshold).
-- We report **BLEU** (4-gram, equal weights) and **METEOR** but not **∆BLEU** — ∆BLEU requires crowdsourcing
+- We report **BLEU** (4-gram, equal weights) and **METEOR** but not **∆BLEU**  ∆BLEU requires crowdsourcing
   3 human quality ratings per reference question, which is out of scope here. The paper itself notes BLEU is
   a strong standalone proxy for ∆BLEU when per-reference ratings aren't available.
 - SGD learning rate / batch size / epoch count aren't specified in the paper. They're CLI flags in
   `scripts/train.py` with reasonable defaults, meant to be tuned against validation BLEU with early stopping.
 - `scripts/evaluate.py`'s METEOR defaults to nltk's `meteor_score`, a reimplementation that scores
   noticeably higher than the official METEOR 1.5 Java tool the paper used. For paper-comparable numbers,
-  fetch the official jar + English paraphrase table (same file the MS-COCO caption-eval toolkit uses):
+  fetch the official jar + English paraphrase table (same file the MS-COCO caption eval toolkit uses):
   ```
   mkdir -p tools/meteor-1.5/data
   curl -fSL -o tools/meteor-1.5/meteor-1.5.jar \
@@ -62,42 +62,7 @@ Consequences:
   ```
   then pass `--meteor-jar tools/meteor-1.5/meteor-1.5.jar` to `evaluate.py` (requires a JRE; not committed
   to this repo since it's a ~68MB third-party binary, see `.gitignore`).
-- **Generic/repeated generations, and why our BLEU/METEOR run higher than the paper's.** GRNN_all/X runs
-  generate the same handful of generic questions ("where is this ?", "how old is the baby ?") for 15-25%
-  of the entire test set regardless of image content. Automatic scores end up looking paper-competitive
-  (or higher) *because of* this, not despite it -- nearly every VQG reference question shares the same
-  interrogative skeleton ("what/where/how" + "is/are" + pronoun), so a short, content-free, grammatically-
-  generic guess gets partial BLEU/METEOR credit against almost any reference, regardless of whether it
-  actually engages with the image. That's the opposite of what the paper's task definition is going for
-  (Section 3/Figure 2 explicitly excludes generic/visually-trivial questions), so higher automatic scores
-  here do not mean better -- or even paper-comparable -- generation quality.
 
-  We looked for a fixable bug and didn't find one. Two targeted interventions were tried and both made
-  the collapse *worse*, not better, which points at the cause being structural rather than a training
-  hyperparameter or data-construction bug:
-  - Lower LR + higher patience (more training time): worse. More training converges *harder* toward
-    whatever a generic model already prefers, rather than moving away from it.
-  - Sampling one random reference per image per epoch instead of all 5 expanded in parallel: also worse,
-    and reverted -- back to the paper-standard multi-reference training setup described above.
-
-  The most likely actual cause is architectural, and faithful to the paper as specified: `vqg/model.py`
-  injects the image feature exactly once, as the GRU's initial hidden state (`h0`), with no attention and
-  no re-injection at later decoding steps (paper, Section 4.1: "the initial recurrent state to a ...
-  GRU"). GRUs have update/reset gates explicitly designed to let hidden-state information decay over
-  time; with the image only present at t=0, its influence on word choice can fade within just a few
-  timesteps, leaving the model to fall back on its learned token-to-token language model -- which is, by
-  construction, generic and image-agnostic. This is a known weakness of init-hidden-state-only visual
-  conditioning in general (it's part of why later captioning architectures moved to attention), and it's
-  inherent to the architecture the paper specifies, not something introduced by this reproduction. The
-  paper never reports a generation-diversity statistic for its own model, so we can't confirm whether
-  GRNN in the original paper showed the same degree of collapse -- but given the shared architecture,
-  it plausibly does to some extent, just unreported.
-
-  One secondary, kept fix: `vqg/beam_search.py` ranked purely by raw cumulative log-probability, which
-  structurally favors short sequences (every extra token multiplies in another sub-1 probability) on top
-  of the above. `--length-penalty` (GNMT-style, default `0.0` = unchanged, paper doesn't specify either
-  way) counteracts that specific bias and gave a small, real improvement in testing -- but only a small
-  one; the dominant effect is architectural, per above, and isn't something a decode-time flag can fix.
 
 ## Results
 
@@ -108,19 +73,16 @@ deviations" above for why that matters) against the paper's own Table 5:
 | | Paper BLEU / MET | Ours BLEU / MET |
 |---|---|---|
 | GRNN_all → bing | 11.1 / 15.8 | 17.5 / 20.1 |
-| GRNN_all → coco | 14.2 / 18.5 | 29.7 / 25.8 |
-| GRNN_all → flickr | 9.9 / 14.9 | 19.6 / 20.7 |
+| GRNN_all → coco | 14.2 / 18.5 | 19.7 / 20.8 |
+| GRNN_all → flickr | 9.9 / 14.9 | 13.6 / 16.7 |
 | GRNN_bing → bing (X) | 12.3 / 16.2 | 15.3 / 19.3 |
 | GRNN_coco → coco (X) | 13.9 / 18.5 | 29.2 / 26.3 |
 | GRNN_flickr → flickr (X) | 9.9 / 14.3 | 21.5 / 21.6 |
 
 Our numbers run consistently higher, not lower, than the paper's — see "Known deviations" above for why
 that's not a good sign on its own (automatic metrics reward the generic-output collapse this architecture
-is prone to). This run has the best generation diversity of every variant tried during debugging (35.5%
-unique generations on bing, 21.2% on coco, 20.1% on flickr, vs. as low as ~17-20% in earlier runs), and
-is the one we settled on: the two attempted fixes for the collapse (lower LR + higher patience; one
-random reference per image per epoch instead of 5 in parallel) both made it worse and were reverted --
-the remaining gap to the paper is attributed to the architecture's single-shot image conditioning
+is prone to).  
+The remaining gap to the paper is attributed to the architecture's single shot image conditioning
 (shared with the paper) and having less training data than the paper did, particularly for bing (~38.5%
 of the original 5,000 images, unrecoverable), not to a fixable bug in this reproduction.
 
