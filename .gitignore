@@ -12,3 +12,9 @@ checkpoints/
 *.pth
 
 # keep small versioned CSVs in data/raw/, everything else under data/ is generated
+
+# third-party binary (jar + paraphrase table, ~68MB) -- fetch via README setup steps
+tools/meteor-1.5/
+
+# local run logs
+logs/

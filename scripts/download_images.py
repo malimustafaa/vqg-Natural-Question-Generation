@@ -22,6 +22,7 @@ Usage:
 import argparse
 import concurrent.futures as cf
 import csv
+import threading
 import time
 from pathlib import Path
 
@@ -38,6 +39,42 @@ SPLITS = ["train", "val", "test"]
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; vqg-dataset-fetch/1.0)"}
 MAX_ATTEMPTS = 4
 RETRY_BACKOFF = 2.0
+# requests' `timeout` only bounds gaps *between* bytes, not the total transfer
+# -- a connection trickling data just under that gap can hang far longer than
+# `timeout` would suggest. Bound the whole download wall-clock instead.
+MAX_TOTAL_SECONDS = 20.0
+
+
+class _TotalTimeExceeded(Exception):
+    pass
+
+
+class RateLimiter:
+    """Paces request *starts* across all worker threads (not per-thread), and
+    lets a 429 push everyone's next allowed request further out -- a global
+    circuit breaker instead of each thread backing off independently and
+    other threads immediately re-tripping the limit."""
+
+    def __init__(self, min_interval):
+        self.min_interval = min_interval
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def wait_turn(self):
+        if self.min_interval <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            start_at = max(now, self._next_allowed)
+            self._next_allowed = start_at + self.min_interval
+        sleep_for = start_at - time.monotonic()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+    def penalize(self, seconds):
+        with self._lock:
+            self._next_allowed = max(self._next_allowed, time.monotonic() + seconds)
+
 
 EXT_BY_CONTENT_TYPE = {
     "image/jpeg": ".jpg",
@@ -55,7 +92,7 @@ def guess_ext(url, content_type):
     return ext if ext in (".jpg", ".jpeg", ".png", ".gif") else ".jpg"
 
 
-def download_one(image_id, url, out_dir, timeout):
+def download_one(image_id, url, out_dir, timeout, limiter):
     existing = list(out_dir.glob(f"{image_id}.*"))
     if existing:
         return image_id, str(existing[0]), "already_downloaded"
@@ -64,16 +101,29 @@ def download_one(image_id, url, out_dir, timeout):
     for attempt in range(MAX_ATTEMPTS):
         if attempt:
             time.sleep(RETRY_BACKOFF * attempt)
+        limiter.wait_turn()
         try:
             r = requests.get(url, timeout=timeout, headers=HEADERS, stream=True)
             if r.status_code != 200:
                 last_status = f"http_{r.status_code}"
+                if r.status_code == 429:
+                    # One 429 means the whole IP is throttled -- pause every
+                    # thread, not just this one, or they'll immediately
+                    # re-trip it in parallel.
+                    limiter.penalize(30.0)
+                    continue
                 # Not worth retrying a real 404/403 (link is gone), but do
-                # retry rate-limit/server errors.
-                if r.status_code not in (429, 500, 502, 503, 504):
+                # retry other transient server errors.
+                if r.status_code not in (500, 502, 503, 504):
                     break
                 continue
-            content = r.content
+            start = time.monotonic()
+            chunks = []
+            for chunk in r.iter_content(chunk_size=65536):
+                chunks.append(chunk)
+                if time.monotonic() - start > MAX_TOTAL_SECONDS:
+                    raise _TotalTimeExceeded
+            content = b"".join(chunks)
             if len(content) < 512:
                 last_status = "too_small"
                 continue
@@ -81,18 +131,22 @@ def download_one(image_id, url, out_dir, timeout):
             out_path = out_dir / f"{image_id}{ext}"
             out_path.write_bytes(content)
             return image_id, str(out_path), "ok"
+        except _TotalTimeExceeded:
+            last_status = "error:TotalTimeExceeded"
+            continue
         except requests.exceptions.RequestException as e:
             last_status = f"error:{type(e).__name__}"
             continue
     return image_id, None, last_status
 
 
-def download_split_source(df, out_dir, workers, timeout, desc):
+def download_split_source(df, out_dir, workers, timeout, desc, min_interval):
     out_dir.mkdir(parents=True, exist_ok=True)
     results = {}
+    limiter = RateLimiter(min_interval)
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {
-            ex.submit(download_one, row.image_id, row.image_url, out_dir, timeout): row.image_id
+            ex.submit(download_one, row.image_id, row.image_url, out_dir, timeout, limiter): row.image_id
             for row in df.itertuples()
         }
         for fut in tqdm(cf.as_completed(futures), total=len(futures), desc=desc):
@@ -110,6 +164,10 @@ def main():
                      help="Max images per source per split (omit for full-scale download)")
     ap.add_argument("--splits", nargs="*", default=SPLITS)
     ap.add_argument("--sources", nargs="*", default=SOURCES)
+    ap.add_argument("--flickr-workers", type=int, default=3,
+                     help="Separate (lower) concurrency for flickr -- its CDN rate-limits hard")
+    ap.add_argument("--flickr-min-interval", type=float, default=0.5,
+                     help="Minimum seconds between flickr request starts, across all workers combined")
     args = ap.parse_args()
 
     base = Path(args.dir)
@@ -129,8 +187,11 @@ def main():
                 df = df.head(args.limit)
 
             out_dir = images_dir / source / split
+            source_workers = args.flickr_workers if source == "flickr" else args.workers
+            min_interval = args.flickr_min_interval if source == "flickr" else 0.0
             results = download_split_source(
-                df, out_dir, args.workers, args.timeout, desc=f"{source}/{split}"
+                df, out_dir, source_workers, args.timeout, desc=f"{source}/{split}",
+                min_interval=min_interval,
             )
 
             n_ok = 0

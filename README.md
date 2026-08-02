@@ -50,6 +50,18 @@ Consequences:
   a strong standalone proxy for ∆BLEU when per-reference ratings aren't available.
 - SGD learning rate / batch size / epoch count aren't specified in the paper. They're CLI flags in
   `scripts/train.py` with reasonable defaults, meant to be tuned against validation BLEU with early stopping.
+- `scripts/evaluate.py`'s METEOR defaults to nltk's `meteor_score`, a reimplementation that scores
+  noticeably higher than the official METEOR 1.5 Java tool the paper used. For paper-comparable numbers,
+  fetch the official jar + English paraphrase table (same file the MS-COCO caption-eval toolkit uses):
+  ```
+  mkdir -p tools/meteor-1.5/data
+  curl -fSL -o tools/meteor-1.5/meteor-1.5.jar \
+    https://raw.githubusercontent.com/tylin/coco-caption/master/pycocoevalcap/meteor/meteor-1.5.jar
+  curl -fSL -o tools/meteor-1.5/data/paraphrase-en.gz \
+    https://raw.githubusercontent.com/tylin/coco-caption/master/pycocoevalcap/meteor/data/paraphrase-en.gz
+  ```
+  then pass `--meteor-jar tools/meteor-1.5/meteor-1.5.jar` to `evaluate.py` (requires a JRE; not committed
+  to this repo since it's a ~68MB third-party binary, see `.gitignore`).
 
 ## Pipeline
 
